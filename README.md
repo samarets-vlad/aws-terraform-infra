@@ -93,13 +93,11 @@ This starter is designed for portfolio use and can be extended with Auto Scaling
 
 ## 🔗 Part of the DevOps Portfolio Series
 
-This repository is part of a full lifecycle DevOps portfolio demonstrating infrastructure, configuration, CI/CD, observability, and automation.
-
-| # | Repository | Stack | Status |
-|---|------------|-------|--------|
-| 1 | **aws-terraform-infra** | Terraform · AWS · VPC · ALB · EC2 · RDS · S3 | ✅ You are here |
-| 2 | ansible-server-setup | Ansible · Nginx · Docker · Linux · TLS | ⏳ In progress |
-| 3 | ci-cd-pipeline-demo | GitHub Actions · Docker · ECR · EC2 · Blue-Green | ⏳ Planned |
-| 4 | monitoring-stack | Prometheus · Grafana · Loki · Alertmanager | ⏳ Planned |
-| 5 | k8s-helm-app | k3s · Helm · Traefik · cert-manager · MySQL | ⏳ Planned |
-| 6 | lambda-automation | AWS Lambda · Python · IAM · CloudWatch | ⏳ Planned |
+| # | Repository | Stack |
+|---|---|---|
+| 1 | 👉 **[aws-terraform-infra](https://github.com/samarets-vlad/aws-terraform-infra)** | Terraform · AWS · VPC · ALB · EC2 · RDS · S3 |
+| 2 | [ansible-server-setup](https://github.com/samarets-vlad/ansible-server-setup) | Ansible · Nginx · Docker · Linux · TLS |
+| 3 | [docker-ecr-ec2-pipeline](https://github.com/samarets-vlad/docker-ecr-ec2-pipeline) | GitHub Actions · Docker · ECR · EC2 |
+| 4 | [monitoring-stack](https://github.com/samarets-vlad/monitoring-stack) | Prometheus · Grafana · Alertmanager · Ansible |
+| 5 | [k8s-helm-app](https://github.com/samarets-vlad/k8s-helm-app) | k3s · Helm · Traefik · cert-manager · MySQL |
+| 6 | [serverless-aws-pipeline](https://github.com/samarets-vlad/serverless-aws-pipeline) | Terraform · Lambda · API GW · S3 · CloudFront |
