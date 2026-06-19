@@ -1,192 +1,321 @@
-# aws-terraform-infra
+# AWS Terraform Infrastructure
 
-![Terraform CI](https://github.com/samarets-vlad/aws-terraform-infra/actions/workflows/terraform.yml/badge.svg)
-![tfsec](https://img.shields.io/badge/security-tfsec-blue)
-![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+[![Terraform CI](https://github.com/samarets-vlad/aws-terraform-infra/actions/workflows/terraform.yml/badge.svg)](https://github.com/samarets-vlad/aws-terraform-infra/actions/workflows/terraform.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Production-hardened AWS infrastructure with Terraform — VPC, ALB, EC2, RDS PostgreSQL, S3.
+> 🇺🇦 [Українська версія](README.uk.md)
 
-This repository provisions a reusable, security-focused AWS foundation for a web application with:
+This repository contains production-ready AWS infrastructure described as code using **Terraform**.
 
-- VPC with public and private subnets across two availability zones
-- Internet Gateway and NAT Gateway
-- Security groups (ALB → EC2 → RDS, least-privilege)
-- Application Load Balancer with HTTPS-ready target group
-- EC2 application instances (IMDSv2 enforced, EBS encrypted, SSH CIDR-restricted)
-- PostgreSQL RDS in private subnets (encrypted at-rest, deletion protection, daily backups)
-- S3 bucket with versioning, AES256 encryption, and public access fully blocked
-- Remote state backend with S3 + native locking (`use_lockfile`)
-- Multi-environment configuration via tfvars
-
-## Architecture
-
-```mermaid
-flowchart TD
-    User[User] --> ALB[Application Load Balancer]
-    ALB --> EC2A[EC2 App A\nIMDSv2 + EBS encrypted]
-    ALB --> EC2B[EC2 App B\nIMDSv2 + EBS encrypted]
-    EC2A --> RDS[(RDS PostgreSQL\nencrypted + deletion protected)]
-    EC2B --> RDS
-    EC2A --> S3[(S3 Assets\nencrypted + versioned)]
-    EC2B --> S3
-    subgraph AWS VPC
-      subgraph Public Subnets
-        ALB
-      end
-      subgraph Private App Subnets
-        EC2A
-        EC2B
-      end
-      subgraph Private DB Subnets
-        RDS
-      end
-    end
-```
-
-## Repository Layout
-
-```text
-.
-├── modules/
-│   ├── vpc/          # VPC, subnets, IGW, NAT GW, route tables
-│   ├── alb/          # Application Load Balancer + security group
-│   ├── ec2_app/      # EC2 instances + ASG-ready, IMDSv2, EBS encryption
-│   └── rds/          # RDS PostgreSQL, encrypted, deletion-protected
-├── .github/workflows/
-│   └── terraform.yml # CI: validate → tfsec → plan (PR) → apply (main)
-├── docs/
-├── examples/complete/
-├── files/
-│   └── user_data.sh
-├── templates/
-├── main.tf
-├── variables.tf
-├── outputs.tf
-├── locals.tf
-├── backend.tf
-├── versions.tf
-├── providers.tf
-├── .tflint.hcl
-├── terraform.tfvars.example
-├── SECURITY.md
-└── LICENSE
-```
-
-## CI/CD Pipeline
-
-Every push and pull request triggers the full pipeline:
-
-```
-PR opened
-  └── validate     → terraform fmt -check, init, validate, tflint
-        └── security → tfsec (AWS misconfiguration and CVE scan)
-              └── plan   → terraform plan posted as PR comment
-
-Merge to main
-  └── validate → apply (requires manual approval via GitHub Environment: production)
-
-Daily 06:00 UTC
-  └── validate (drift detection — alerts if infra drifted from code)
-```
-
-## Secrets and Variables
-
-Sensitive values are **never** committed to the repository. Supply them at runtime:
-
-```bash
-# Option A: environment variable (CI/CD)
-export TF_VAR_db_password="your-secure-password"
-
-# Option B: tfvars file (local only, .gitignored)
-echo 'db_password = "your-secure-password"' >> terraform.tfvars
-```
-
-Required GitHub Actions Secrets (set in repo Settings → Secrets):
-
-| Secret | Description |
-|--------|-------------|
-| `AWS_ACCESS_KEY_ID` | IAM access key (use OIDC in production instead) |
-| `AWS_SECRET_ACCESS_KEY` | IAM secret key |
-| `AWS_DEFAULT_REGION` | AWS region (e.g. `eu-central-1`) |
-| `TF_VAR_DB_PASSWORD` | RDS master password |
-
-> **Production recommendation:** Replace static IAM keys with [OIDC federation](https://docs.github.com/en/actions/security-for-github-actions/security-hardening-your-deployments/configuring-openid-connect-in-amazon-web-services) (`aws-actions/configure-aws-credentials` with role ARN). This eliminates long-lived credentials entirely.
-
-## Environment-Specific Configuration
-
-| Variable | dev | prod |
-|----------|-----|------|
-| `rds_deletion_protection` | `false` | `true` |
-| `rds_skip_final_snapshot` | `true` | `false` |
-| `rds_backup_retention_period` | `1` | `7` |
-| `ssh_allowed_cidrs` | `["10.0.0.0/8"]` | `[]` (disabled) |
-
-Use separate tfvars files per environment:
-
-```bash
-terraform apply -var-file=envs/dev.tfvars
-terraform apply -var-file=envs/prod.tfvars
-```
-
-## Quick Start
-
-> **Local validation** (no AWS credentials required):
-
-```bash
-cp terraform.tfvars.example terraform.tfvars
-# Edit terraform.tfvars — set required values
-terraform init -backend=false
-terraform fmt -recursive
-terraform validate
-tflint --recursive
-```
-
-> **Full deployment** (requires AWS credentials and pre-created S3 backend):
-
-```bash
-# 1. Create S3 bucket + enable versioning + create DynamoDB table (once)
-# 2. Update backend.tf with your bucket name
-terraform init
-terraform plan -var-file=envs/dev.tfvars
-terraform apply -var-file=envs/dev.tfvars
-```
-
-## Remote State Backend
-
-```hcl
-# backend.tf — update bucket/region before terraform init
-terraform {
-  backend "s3" {
-    bucket       = "YOUR-BUCKET-NAME-tf-state"
-    key          = "aws-terraform-infra/dev/terraform.tfstate"
-    region       = "eu-central-1"
-    use_lockfile = true   # native S3 locking (Terraform >= 1.10)
-    encrypt      = true
-  }
-}
-```
-
-> Enable S3 bucket versioning and restrict access via bucket policy. See `docs/` for a bootstrap script.
-
-## Security Hardening Applied
-
-| Resource | Hardening |
-|----------|-----------|
-| EC2 | IMDSv2 required, EBS encrypted (gp3), SSH CIDR-restricted |
-| RDS | Storage encrypted (AES256), deletion protection, daily backups, no public access |
-| S3 | AES256 SSE, versioning enabled, all public access blocked |
-| CI | tfsec scan on every PR, secrets via GitHub Secrets only |
-| Terraform | Provider version pinned (`~> 5.98`), `sensitive = true` on passwords |
+Instead of clicking around in the AWS Console to create servers, databases, and load balancers — everything is described in files. You run one command and the infrastructure appears. You run another command and it disappears. Everything is reproducible and version-controlled.
 
 ---
 
-## 🔗 Part of the DevOps Portfolio Series
+## What Does This Infrastructure Create?
 
-| # | Repository | Stack |
-|---|---|---|
-| 1 | 👉 **[aws-terraform-infra](https://github.com/samarets-vlad/aws-terraform-infra)** | Terraform · AWS · VPC · ALB · EC2 · RDS · S3 |
-| 2 | [ansible-server-setup](https://github.com/samarets-vlad/ansible-server-setup) | Ansible · Nginx · Docker · Linux · TLS |
-| 3 | [docker-ecr-ec2-pipeline](https://github.com/samarets-vlad/docker-ecr-ec2-pipeline) | GitHub Actions · Docker · ECR · EC2 |
-| 4 | [monitoring-stack](https://github.com/samarets-vlad/monitoring-stack) | Prometheus · Grafana · Alertmanager · Ansible |
-| 5 | [k8s-helm-app](https://github.com/samarets-vlad/k8s-helm-app) | k3s · Helm · Traefik · cert-manager · MySQL |
-| 6 | [serverless-aws-pipeline](https://github.com/samarets-vlad/serverless-aws-pipeline) | Terraform · Lambda · API GW · S3 · CloudFront |
+When you run `terraform apply`, the following resources are created in your AWS account:
+
+```
+                        Internet
+                           │
+                    ┌──────▼──────┐
+                    │     ALB     │  ← Load Balancer (distributes traffic)
+                    │  (port 80)  │
+                    └──────┬──────┘
+                           │
+              ┌────────────┴────────────┐
+              │                         │
+       ┌──────▼──────┐           ┌──────▼──────┐
+       │   EC2 App   │           │   EC2 App   │  ← Application servers
+       │  (AZ-1)     │           │  (AZ-2)     │    (2 availability zones)
+       └──────┬──────┘           └──────┬──────┘
+              │                         │
+              └────────────┬────────────┘
+                           │
+                    ┌──────▼──────┐
+                    │  RDS (PG)   │  ← PostgreSQL database (private, encrypted)
+                    └─────────────┘
+
+       All resources live inside a VPC (Virtual Private Cloud)
+       Public subnet  → ALB only
+       Private subnet → EC2 app servers
+       DB subnet      → RDS (no internet access)
+```
+
+### Resources created:
+
+| Resource | What it is | Notes |
+|----------|-----------|-------|
+| **VPC** | Isolated network in AWS | Your own private section of the cloud |
+| **Public subnets** | Subnets with internet access | ALB lives here |
+| **Private subnets** | Subnets without internet access | App servers live here |
+| **DB subnets** | Subnets isolated from everything | Database lives here |
+| **ALB** | Application Load Balancer | Receives user traffic, distributes to app servers |
+| **EC2** | Virtual servers | Run your application |
+| **RDS (PostgreSQL)** | Managed database | Encrypted, with automatic backups |
+| **S3 bucket** | File storage | For static assets or application files |
+| **Security Groups** | Firewall rules | Controls who can talk to what |
+
+---
+
+## Repository Structure
+
+```
+aws-terraform-infra/
+├── main.tf                    # Main entry point — connects all modules
+├── variables.tf               # All input parameters with descriptions
+├── outputs.tf                 # What Terraform prints after apply (URLs, IPs)
+├── locals.tf                  # Internal computed values (e.g. common tags)
+├── versions.tf                # Terraform and provider version requirements
+├── backend.tf                 # Where to store the Terraform state file (S3)
+├── providers.tf               # AWS provider configuration
+├── terraform.tfvars.example   # Example values file — copy to terraform.tfvars
+├── .tflint.hcl                # Linter configuration
+├── .gitignore                 # Files NOT committed to Git (secrets, state, etc.)
+│
+├── modules/                   # Reusable infrastructure components
+│   ├── vpc/                   # VPC, subnets, routing, internet gateway
+│   ├── alb/                   # Application Load Balancer + target group
+│   ├── ec2_app/               # EC2 instances + security group
+│   └── rds/                   # RDS PostgreSQL + subnet group + security group
+│
+├── .github/
+│   └── workflows/
+│       └── terraform.yml      # CI/CD pipeline (runs on every push/PR)
+│
+├── SECURITY.md                # Security policy and disclosure guidelines
+└── LICENSE                    # MIT License
+```
+
+**What is a "module"?**  
+A module is a reusable building block. Instead of writing all 500 lines of Terraform in one file, we split it into logical groups (VPC, load balancer, server, database). Each module has its own folder, its own inputs, and its own outputs. This makes the code easier to understand, test, and reuse.
+
+---
+
+## Requirements
+
+Before you can use this repository, you need:
+
+| Tool | Version | Why |
+|------|---------|-----|
+| [Terraform](https://developer.hashicorp.com/terraform/install) | >= 1.11.0 | The main tool that creates infrastructure |
+| [AWS CLI](https://aws.amazon.com/cli/) | >= 2.x | To authenticate with AWS |
+| AWS Account | — | Where the infrastructure will be created |
+| AWS IAM User/Role | With permissions | Terraform uses this to create resources |
+
+---
+
+## How to Deploy (Local)
+
+> ⚠️ **Important:** `terraform apply` creates real AWS resources and **costs real money**. Always run `terraform plan` first to review what will be created.
+
+### Step 1 — Clone the repository
+
+```bash
+git clone https://github.com/samarets-vlad/aws-terraform-infra.git
+cd aws-terraform-infra
+```
+
+### Step 2 — Configure AWS credentials
+
+```bash
+aws configure
+# Enter: AWS Access Key ID, Secret Access Key, Region (e.g. eu-central-1)
+```
+
+### Step 3 — Create your variables file
+
+```bash
+cp terraform.tfvars.example terraform.tfvars
+# Open terraform.tfvars and fill in your values
+```
+
+The minimum required values:
+
+```hcl
+project_name = "my-app"
+environment  = "dev"
+aws_region   = "eu-central-1"
+
+vpc_cidr                  = "10.0.0.0/16"
+availability_zones        = ["eu-central-1a", "eu-central-1b"]
+public_subnet_cidrs       = ["10.0.1.0/24", "10.0.2.0/24"]
+private_app_subnet_cidrs  = ["10.0.11.0/24", "10.0.12.0/24"]
+private_db_subnet_cidrs   = ["10.0.21.0/24", "10.0.22.0/24"]
+
+ami_id       = "ami-0a1b2c3d4e5f6"   # Region-specific — find in AWS Console
+db_password  = "CHANGE_ME_use_strong_password"
+```
+
+> 🔒 **Never commit `terraform.tfvars` to Git.** It is already in `.gitignore`. It contains your database password and region-specific values.
+
+### Step 4 — Initialize Terraform
+
+```bash
+terraform init
+```
+
+This downloads the AWS provider plugin (~40 MB). Only needed once, or after changing `versions.tf`.
+
+### Step 5 — Review the plan
+
+```bash
+terraform plan
+```
+
+Terraform will show you **exactly** what it will create, modify, or destroy — without actually doing anything. Read this carefully before proceeding.
+
+### Step 6 — Apply
+
+```bash
+terraform plan -out=tfplan   # Save the plan
+terraform apply tfplan        # Apply exactly that plan
+```
+
+### Step 7 — Destroy (when done)
+
+```bash
+terraform destroy
+```
+
+This removes **all** resources. Useful for dev/test to avoid ongoing costs.
+
+> ⚠️ **For production:** `rds_deletion_protection = true` prevents accidental database deletion. You must set it to `false` before running `destroy`.
+
+---
+
+## Input Variables
+
+All variables are defined in `variables.tf`. Copy `terraform.tfvars.example` and fill in your values.
+
+### Required (no default — must be provided)
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| `vpc_cidr` | string | VPC network range, e.g. `10.0.0.0/16` |
+| `public_subnet_cidrs` | list | CIDR blocks for public subnets, one per AZ |
+| `private_app_subnet_cidrs` | list | CIDR blocks for app subnets, one per AZ |
+| `private_db_subnet_cidrs` | list | CIDR blocks for DB subnets, one per AZ |
+| `availability_zones` | list | AZs to deploy into, e.g. `["eu-central-1a", "eu-central-1b"]` |
+| `ami_id` | string | EC2 AMI ID (region-specific — find in AWS Console) |
+| `db_password` | string | PostgreSQL master password — **never hardcode** |
+
+### Optional (have sensible defaults)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `aws_region` | `eu-central-1` | AWS region to deploy into |
+| `project_name` | `portfolio-app` | Prefix for all resource names |
+| `environment` | `dev` | Must be `dev`, `stage`, or `prod` |
+| `instance_type` | `t3.micro` | EC2 instance type |
+| `app_port` | `8080` | Port your application listens on |
+| `db_instance_class` | `db.t3.micro` | RDS instance type |
+| `db_name` | `appdb` | PostgreSQL database name |
+| `db_username` | `appuser` | PostgreSQL master username |
+| `rds_deletion_protection` | `true` | Prevents accidental DB deletion |
+| `rds_skip_final_snapshot` | `false` | If false, a snapshot is taken before deletion |
+| `rds_backup_retention_period` | `7` | Days to keep automated backups |
+| `ssh_allowed_cidrs` | `[]` | CIDRs allowed SSH. Empty = SSH disabled |
+| `ssh_key_name` | `null` | EC2 key pair name. Null = no key pair |
+
+---
+
+## CI/CD Pipeline
+
+Every push and every Pull Request automatically triggers the pipeline defined in `.github/workflows/terraform.yml`.
+
+```
+Push or Pull Request to main
+          │
+          ▼
+    ┌─────────────┐
+    │  1. Validate │  terraform fmt, init (no backend), validate, tflint
+    └──────┬──────┘
+           │ passes
+           ▼
+    ┌─────────────┐
+    │  2. Security │  tfsec — scans for AWS misconfigurations
+    └─────────────┘
+
+  ✅ If both pass → PR can be merged
+  ❌ If any fails → PR is blocked
+```
+
+### What each step does:
+
+| Step | Tool | What it checks |
+|------|------|----------------|
+| Format check | `terraform fmt -check` | Code is properly formatted (spacing, alignment) |
+| Init | `terraform init -backend=false` | Dependencies download correctly |
+| Validate | `terraform validate` | Syntax is valid, no undefined variables |
+| Lint | `tflint` | Best practices: pinned versions, documented variables, etc. |
+| Security | `tfsec` | No open security groups, encryption enabled, IMDSv2 enforced, etc. |
+
+> 💡 **No AWS credentials are used in CI.** All checks are static analysis only — they read the code without connecting to AWS. This means **zero cost** from running CI.
+
+> ⚠️ **`terraform plan` and `terraform apply` are intentionally not in CI.** Run them manually from your local machine when you actually want to deploy.
+
+---
+
+## Security Hardening
+
+This project implements AWS security best practices out of the box:
+
+| What | Why it matters |
+|------|----------------|
+| **IMDSv2 enforced on EC2** | Prevents SSRF attacks from stealing instance credentials |
+| **EBS volumes encrypted** | Data at rest is encrypted with AES-256 |
+| **RDS storage encrypted** | Database data is encrypted at rest |
+| **RDS deletion protection** | Prevents accidental database destruction |
+| **RDS final snapshot** | Backup is taken automatically before any deletion |
+| **S3 public access blocked** | All 4 public access block flags set to `true` |
+| **S3 versioning enabled** | You can recover deleted or overwritten files |
+| **S3 server-side encryption** | Files stored in S3 are encrypted |
+| **SSH disabled by default** | `ssh_allowed_cidrs = []` — no SSH rule unless explicitly set |
+| **DB in private subnet** | RDS has no internet access — only reachable from app servers |
+| **Secrets not in code** | `db_password` is marked `sensitive`, never stored in Git |
+| **Provider version pinned** | `aws ~> 5.98` — no surprise breaking changes |
+| **Terraform >= 1.11.0 required** | Minimum version enforced in all modules |
+
+---
+
+## State File
+
+Terraform needs to store a "state file" — a record of what infrastructure currently exists. This file must be stored remotely (not on your laptop) so a team can collaborate and so it is not lost.
+
+This project is configured to use **AWS S3 + DynamoDB** for remote state storage (see `backend.tf`).
+
+Before running `terraform init` for the first time, you must **manually create**:
+- An S3 bucket (with versioning and encryption enabled)
+- A DynamoDB table (for state locking — prevents two people from running `apply` at the same time)
+
+Then update `backend.tf` with your bucket name and table name.
+
+> This is a one-time setup step. After that, all state is managed automatically.
+
+---
+
+## Environment Differences
+
+Use the `environment` variable to control behaviour per environment:
+
+| Setting | `dev` | `stage` | `prod` |
+|---------|-------|---------|--------|
+| `rds_deletion_protection` | `false` | `true` | `true` |
+| `rds_skip_final_snapshot` | `true` | `false` | `false` |
+| `rds_backup_retention_period` | `1` | `7` | `14` |
+| `instance_type` | `t3.micro` | `t3.small` | `t3.medium` |
+| `ssh_allowed_cidrs` | your IP | your IP | `[]` (disabled) |
+
+---
+
+## License
+
+[MIT](LICENSE) — free to use, modify, and distribute.
+
+---
+
+## Author
+
+**Vladyslav Samarets** — DevOps Engineer  
+[GitHub](https://github.com/samarets-vlad)
